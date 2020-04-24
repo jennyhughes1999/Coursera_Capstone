@@ -1,0 +1,32 @@
++*In[2]:*+
+[source, ipython3]
+----
+import pandas as pd
+----
+
+
++*In[3]:*+
+[source, ipython3]
+----
+import numpy as np
+----
+
+
++*In[5]:*+
+[source, ipython3]
+----
+print("Hello Capstone Project Course!")
+----
+
+
++*Out[5]:*+
+----
+Hello Capstone Project Course!
+----
+
+
++*In[ ]:*+
+[source, ipython3]
+----
+
+----
