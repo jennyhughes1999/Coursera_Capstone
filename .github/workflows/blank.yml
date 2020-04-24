@@ -1,0 +1,212 @@
+data = requests.get("https://en.wikipedia.org/wiki/Category:Districts_of_Ho_Chi_Minh_City").text
+
+
+soup = BeautifulSoup(data, 'html.parser')
+
+DistrictList = []
+
+for row in soup.find_all("div", class_="mw-category")[0].findAll("li"):
+    DistrictList.append(row.text.split(",")[0])
+    #DistrictList.append(row.text.rsrip(",")[0])
+
+hcmc_df = pd.DataFrame({"District": DistrictList})
+
+hcmc_df
+
+
+hcmc_df.shape
+
+def get_latlng(neighborhood):
+    # initialize your variable to None
+    lat_lng_coords = None
+    # loop until you get the coordinates
+    while(lat_lng_coords is None):
+        g = geocoder.arcgis('{}, Ho Chi Minh, VietNam'.format(neighborhood))
+        lat_lng_coords = g.latlng
+    return lat_lng_coords
+
+coords = [ get_latlng(neighborhood) for neighborhood in hcmc_df["District"].tolist() ]
+
+coords
+
+df_coords = pd.DataFrame(coords, columns=['Latitude', 'Longitude'])
+
+hcmc_df['Latitude'] = df_coords['Latitude']
+hcmc_df['Longitude'] = df_coords['Longitude']
+
+print(hcmc_df.shape)
+hcmc_df
+
+hcmc_df.to_csv("hcmc_df.csv", index=False)
+
+address = 'Ho Chi Minh, VietNam'
+
+geolocator = Nominatim(user_agent="my-application")
+location = geolocator.geocode(address)
+latitude = location.latitude
+longitude = location.longitude
+print('The geograpical coordinate of Ho Chi Minh, VietNam {}, {}.'.format(latitude, longitude))
+
+# create map of Ho Chi Minh using latitude and longitude values
+map_hcmc = folium.Map(location=[latitude, longitude], zoom_start=11)
+
+# add markers to map
+for lat, lng, neighborhood in zip(hcmc_df['Latitude'], hcmc_df['Longitude'], hcmc_df['District']):
+    label = '{}'.format(neighborhood)
+    label = folium.Popup(label, parse_html=True)
+    folium.CircleMarker(
+        [lat, lng],
+        radius=5,
+        popup=label,
+        color='blue',
+        fill=True,
+        fill_color='#3186cc',
+        fill_opacity=0.7).add_to(map_hcmc)  
+    
+map_hcmc
+
+
+map_hcmc.save('map_hcmc.html')
+
+
+CLIENT_ID = 'YourClientIDHere'
+CLIENT_SECRET = 'YourClientSecretHere'
+VERSION = 'YourVersionHere'
+
+
+radius = 2000
+LIMIT = 100
+
+venues = []
+
+for lat, long, neighborhood in zip(hcmc_df['Latitude'], hcmc_df['Longitude'], hcmc_df['District']):
+    
+    # create the API request URL
+    url = "https://api.foursquare.com/v2/venues/explore?client_id={}&client_secret={}&v={}&ll={},{}&radius={}&limit={}".format(
+        CLIENT_ID,
+        CLIENT_SECRET,
+        VERSION,
+        lat,
+        long,
+        radius, 
+        LIMIT)
+    
+    
+     # make the GET request
+    results = requests.get(url).json()["response"]['groups'][0]['items']
+    
+    # return only relevant information for each nearby venue
+    for venue in results:
+        venues.append((
+            neighborhood,
+            lat, 
+            long, 
+            venue['venue']['name'], 
+            venue['venue']['location']['lat'], 
+            venue['venue']['location']['lng'],  
+            venue['venue']['categories'][0]['name']))
+
+venues_df = pd.DataFrame(venues)
+
+# define the column names
+venues_df.columns = ['District', 'Latitude', 'Longitude', 'VenueName', 'VenueLatitude', 'VenueLongitude', 'VenueCategory']
+
+print(venues_df.shape)
+venues_df.head(10)
+
+venues_df.groupby(["District"]).count()
+
+
+print('There are {} uniques categories.'.format(len(venues_df['VenueCategory'].unique())))
+
+venues_df['VenueCategory'].unique()[:50]
+
+"Restaurant" in venues_df['VenueCategory'].unique()
+
+hcmc_onehot = pd.get_dummies(venues_df[['VenueCategory']], prefix="", prefix_sep="")
+
+# add neighborhood column back to dataframe
+hcmc_onehot['District'] = venues_df['District'] 
+
+# move neighborhood column to the first column
+fixed_columns = [hcmc_onehot.columns[-1]] + list(hcmc_onehot.columns[:-1])
+hcmc_onehot = hcmc_onehot[fixed_columns]
+
+print(hcmc_onehot.shape)
+hcmc_onehot.head()
+
+hcmc_grouped = hcmc_onehot.groupby(["District"]).mean().reset_index()
+print(hcmc_grouped.shape)
+hcmc_grouped
+
+
+len(hcmc_grouped[hcmc_grouped["Restaurant"] > 0])
+
+hcmc_restaurant = hcmc_grouped[["District","Restaurant"]]
+
+hcmc_restaurant.head()
+
+# set number of clusters
+kclusters = 3
+
+hcmc_clustering = hcmc_restaurant.drop(["District"], 1)
+
+# run k-means clustering
+kmeans = KMeans(n_clusters=kclusters, random_state=0).fit(hcmc_clustering)
+
+# check cluster labels generated for each row in the dataframe
+kmeans.labels_[0:10]
+
+hcmc_merged = hcmc_restaurant.copy()
+
+# add clustering labels
+hcmc_merged["Cluster Labels"] = kmeans.labels_
+
+hcmc_merged.rename(columns={"District": "District"}, inplace=True)
+hcmc_merged.head()
+
+# merge hcmc_merged with hcmc_df to add latitude/longitude for each neighborhood
+hcmc_merged_final = hcmc_merged.join(hcmc_df.set_index("District"), on="District")
+print(hcmc_merged_final.shape)
+hcmc_merged_final.head() # check the last columns!
+
+# sort the results by Cluster Labels
+print(hcmc_merged_final.shape)
+hcmc_merged_final.sort_values(["Cluster Labels"], inplace=True)
+hcmc_merged_final
+
+# create map
+map_clusters = folium.Map(location=[latitude, longitude], zoom_start=11)
+
+# set color scheme for the clusters
+x = np.arange(kclusters)
+ys = [i+x+(i*x)**2 for i in range(kclusters)]
+colors_array = cm.rainbow(np.linspace(0, 1, len(ys)))
+rainbow = [colors.rgb2hex(i) for i in colors_array]
+
+# add markers to the map
+markers_colors = []
+for lat, lon, poi, cluster in zip(hcmc_merged_final['Latitude'], hcmc_merged_final['Longitude'], hcmc_merged_final['District'], hcmc_merged_final['Cluster Labels']):
+    label = folium.Popup(str(poi) + ' - Cluster ' + str(cluster), parse_html=True)
+    folium.CircleMarker(
+        [lat, lon],
+        radius=5,
+        popup=label,
+        color=rainbow[cluster-1],
+        fill=True,
+        fill_color=rainbow[cluster-1],
+        fill_opacity=0.7).add_to(map_clusters)
+       
+map_clusters
+
+# save the map as HTML file
+map_clusters.save('map_clusters.html')
+
+
+hcmc_merged_final.loc[hcmc_merged['Cluster Labels'] == 0]
+
+
+hcmc_merged_final.loc[hcmc_merged['Cluster Labels'] == 1]
+
+hcmc_merged_final.loc[hcmc_merged['Cluster Labels'] == 2]
+
